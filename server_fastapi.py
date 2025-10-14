@@ -104,3 +104,25 @@ async def parse_image_simple(file: UploadFile = File(...)):
         
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"خطأ: {str(e)}")
+
+# إضافة هذه الإعدادات لتحسين الأداء
+@app.post("/parse_image_optimized")
+async def parse_image_optimized(file: UploadFile = File(...)):
+    try:
+        image_data = await file.read()
+        image = Image.open(io.BytesIO(image_data)).convert('RGB')
+        image_np = np.array(image)
+        
+        # إعدادات محسنة للبطاقات
+        results = reader.readtext(
+            image_np,
+            paragraph=True,  # تجميع النص في فقرات
+            min_size=10,     # حجم النص الأدنى
+            text_threshold=0.7  # ثقة أعلى في النص
+        )
+        
+        all_text = " ".join([result[1] for result in results])
+        return {"text": all_text.strip()}
+        
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"خطأ: {str(e)}")
