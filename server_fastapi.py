@@ -5,15 +5,14 @@ import numpy as np
 from PIL import Image
 import io
 import logging
-import os
 
-# تهيئة اللوجر
+# إعداد اللوج
 logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger(__name__)
+logger = logging.getLogger("server_fastapi")
 
-app = FastAPI(title="OCR API", version="1.0")
+app = FastAPI(title="OCR API (Optimized)", version="1.1")
 
-# CORS middleware
+# CORS
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -22,107 +21,80 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# تهيئة EasyOCR مرة واحدة عند بدء التشغيل
+# ✅ تأجيل تحميل النموذج حتى أول طلب
 reader = None
 
-@app.on_event("startup")
-async def startup_event():
+def get_reader():
+    """تحميل النموذج عند أول استخدام فقط لتوفير الذاكرة."""
     global reader
-    try:
-        logger.info("🚀 جاري تحميل نموذج EasyOCR...")
-        # تحميل النموذج للعربية والإنجليزية
-        reader = easyocr.Reader(['ar', 'en'], gpu=False)
-        logger.info("✅ تم تحميل النموذج بنجاح!")
-    except Exception as e:
-        logger.error(f"❌ خطأ في تحميل النموذج: {e}")
-        raise e
+    if reader is None:
+        logger.info("🚀 تحميل EasyOCR لأول مرة (قد يستغرق دقيقة)...")
+        try:
+            reader = easyocr.Reader(['en'], gpu=False)
+            logger.info("✅ تم تحميل نموذج EasyOCR بنجاح!")
+        except Exception as e:
+            logger.error(f"❌ فشل تحميل النموذج: {e}")
+            raise HTTPException(status_code=500, detail="فشل تحميل نموذج OCR")
+    return reader
+
 
 @app.get("/")
 async def root():
     return {"message": "OCR API is running!", "status": "active"}
 
+
 @app.get("/health")
 async def health_check():
     return {"status": "healthy", "model_loaded": reader is not None}
 
+
 @app.post("/parse_image")
 async def parse_image(file: UploadFile = File(...)):
-    # التحقق من نوع الملف
-    if not file.content_type.startswith('image/'):
+    if not file.content_type.startswith("image/"):
         raise HTTPException(status_code=400, detail="الملف يجب أن يكون صورة")
-    
+
     try:
-        logger.info(f"📨 معالجة الصورة: {file.filename}")
-        
-        # قراءة بيانات الصورة
+        logger.info(f"📨 استقبال صورة: {file.filename}")
         image_data = await file.read()
-        
-        # تحويل إلى صورة PIL
-        image = Image.open(io.BytesIO(image_data)).convert('RGB')
-        
-        # تحويل إلى numpy array لـ EasyOCR
+        image = Image.open(io.BytesIO(image_data)).convert("RGB")
         image_np = np.array(image)
-        
-        # استخراج النص من الصورة
-        results = reader.readtext(image_np)
-        
-        # تجميع النتائج
+
+        # تحميل القارئ عند الطلب فقط
+        ocr = get_reader()
+
+        # تشغيل OCR
+        results = ocr.readtext(image_np)
+
         if not results:
             return {"text": "", "confidence": 0, "message": "لم يتم العثور على نص"}
-        
-        # جمع كل النصوص المكتشفة
-        all_text = " ".join([result[1] for result in results])
-        
-        # حساب متوسط الثقة
-        confidences = [result[2] for result in results]
-        avg_confidence = sum(confidences) / len(confidences)
-        
-        logger.info(f"✅ تم استخراج النص بنجاح: {all_text[:50]}...")
-        
+
+        all_text = " ".join([r[1] for r in results])
+        confidences = [r[2] for r in results]
+        avg_conf = sum(confidences) / len(confidences)
+
+        logger.info(f"✅ OCR Done: {all_text[:60]}...")
         return {
             "text": all_text.strip(),
-            "confidence": round(avg_confidence, 3),
-            "filename": file.filename
+            "confidence": round(avg_conf, 3),
+            "filename": file.filename,
         }
-        
+
+    except MemoryError:
+        logger.error("❌ نفاد الذاكرة أثناء معالجة الصورة!")
+        raise HTTPException(status_code=500, detail="نفاد الذاكرة أثناء المعالجة")
     except Exception as e:
-        logger.error(f"❌ خطأ في معالجة الصورة: {e}")
-        raise HTTPException(status_code=500, detail=f"خطأ في معالجة الصورة: {str(e)}")
+        logger.error(f"❌ خطأ أثناء معالجة الصورة: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
 
 @app.post("/parse_image_simple")
 async def parse_image_simple(file: UploadFile = File(...)):
-    """نسخة مبسطة ترجع النص فقط"""
     try:
         image_data = await file.read()
-        image = Image.open(io.BytesIO(image_data)).convert('RGB')
-        image_np = np.array(image)
-        
-        results = reader.readtext(image_np)
-        all_text = " ".join([result[1] for result in results])
-        
+        image = Image.open(io.BytesIO(image_data)).convert("RGB")
+        ocr = get_reader()
+        results = ocr.readtext(np.array(image))
+        all_text = " ".join([r[1] for r in results])
         return {"text": all_text.strip()}
-        
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"خطأ: {str(e)}")
-
-# إضافة هذه الإعدادات لتحسين الأداء
-@app.post("/parse_image_optimized")
-async def parse_image_optimized(file: UploadFile = File(...)):
-    try:
-        image_data = await file.read()
-        image = Image.open(io.BytesIO(image_data)).convert('RGB')
-        image_np = np.array(image)
-        
-        # إعدادات محسنة للبطاقات
-        results = reader.readtext(
-            image_np,
-            paragraph=True,  # تجميع النص في فقرات
-            min_size=10,     # حجم النص الأدنى
-            text_threshold=0.7  # ثقة أعلى في النص
-        )
-        
-        all_text = " ".join([result[1] for result in results])
-        return {"text": all_text.strip()}
-        
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"خطأ: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
