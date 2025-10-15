@@ -1,20 +1,16 @@
 import io
-import os
-from fastapi import FastAPI, File, UploadFile, HTTPException
-from fastapi.middleware.cors import CORSMiddleware
-from PIL import Image
-import pytesseract
 import numpy as np
+from fastapi import FastAPI, UploadFile, File, HTTPException
+from fastapi.middleware.cors import CORSMiddleware
+from PIL import Image, ImageOps
+import pytesseract
 import logging
 
-# ==========================
-# إعداد السيرفر
-# ==========================
-app = FastAPI(title="OCR ID Parser - Tesseract")
+app = FastAPI(title="OCR Arabic ID Reader - Tesseract")
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # أو ضع نطاقك فقط
+    allow_origins=["*"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -23,29 +19,35 @@ app.add_middleware(
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("server_fastapi")
 
-# ==========================
-# نقطة الفحص
-# ==========================
 @app.get("/")
-async def home():
-    return {"message": "🚀 OCR API Running with Tesseract!"}
+async def root():
+    return {"message": "🚀 Arabic OCR API Running!"}
 
-# ==========================
-# نقطة رفع الصورة وتحليلها
-# ==========================
-@app.post("/parse-image")
+@app.post("/parse_image")
 async def parse_image(file: UploadFile = File(...)):
     try:
-        logger.info("📥 Received image: %s", file.filename)
+        logger.info(f"📥 Received image: {file.filename}")
         image_bytes = await file.read()
-        image = Image.open(io.BytesIO(image_bytes))
 
-        # تحويل الصورة لـ numpy وتحسينها قبل OCR
-        img = np.array(image.convert("L"))  # تدرج رمادي
-        text = pytesseract.image_to_string(img, lang="ara+eng")
+        # فتح الصورة
+        image = Image.open(io.BytesIO(image_bytes)).convert("RGB")
 
-        logger.info("✅ OCR Done. Extracted text length: %d", len(text))
-        return {"text": text.strip()}
+        # تحويل لتدرج رمادي + زيادة الوضوح
+        gray = ImageOps.grayscale(image)
+        gray = ImageOps.autocontrast(gray)
+
+        # تحسين القراءة عبر threshold بسيط
+        gray_np = np.array(gray)
+        gray_np = np.where(gray_np > 160, 255, 0).astype(np.uint8)
+        gray = Image.fromarray(gray_np)
+
+        # قراءة النص بالعربية فقط
+        text = pytesseract.image_to_string(gray, lang="ara")
+
+        text_clean = text.strip()
+        logger.info(f"✅ OCR Done. Extracted text length: {len(text_clean)}")
+
+        return {"text": text_clean}
 
     except Exception as e:
         logger.exception("❌ Error during OCR:")
