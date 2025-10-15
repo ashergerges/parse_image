@@ -1,12 +1,11 @@
 import io
 import numpy as np
-from fastapi import FastAPI, UploadFile, File, HTTPException
+from fastapi import FastAPI, File, UploadFile, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
-from PIL import Image, ImageOps
+from PIL import Image, ImageEnhance, ImageFilter
 import pytesseract
-import logging
 
-app = FastAPI(title="OCR Arabic ID Reader - Tesseract")
+app = FastAPI(title="OCR ID Parser - Tesseract Arabic")
 
 app.add_middleware(
     CORSMiddleware,
@@ -16,39 +15,36 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger("server_fastapi")
-
 @app.get("/")
-async def root():
-    return {"message": "🚀 Arabic OCR API Running!"}
+async def home():
+    return {"message": "🚀 Arabic OCR API Running Successfully!"}
 
-@app.post("/parse_image")
+@app.post("/parse-image")
 async def parse_image(file: UploadFile = File(...)):
     try:
-        logger.info(f"📥 Received image: {file.filename}")
         image_bytes = await file.read()
+        image = Image.open(io.BytesIO(image_bytes))
 
-        # فتح الصورة
-        image = Image.open(io.BytesIO(image_bytes)).convert("RGB")
+        # تحويل لتدرج رمادي
+        gray = image.convert("L")
 
-        # تحويل لتدرج رمادي + زيادة الوضوح
-        gray = ImageOps.grayscale(image)
-        gray = ImageOps.autocontrast(gray)
+        # تحسين التباين والحدة
+        enhancer = ImageEnhance.Contrast(gray)
+        enhanced = enhancer.enhance(2.0)
+        sharpened = enhanced.filter(ImageFilter.SHARPEN)
 
-        # تحسين القراءة عبر threshold بسيط
-        gray_np = np.array(gray)
-        gray_np = np.where(gray_np > 160, 255, 0).astype(np.uint8)
-        gray = Image.fromarray(gray_np)
+        # تحويل الصورة إلى أبيض وأسود (ثنائي)
+        bw = sharpened.point(lambda x: 0 if x < 140 else 255, '1')
 
-        # قراءة النص بالعربية فقط
-        text = pytesseract.image_to_string(gray, lang="ara")
+        # تشغيل OCR باستخدام Tesseract
+        text = pytesseract.image_to_string(
+            bw,
+            lang="ara+eng",
+            config="--psm 6"
+        )
 
-        text_clean = text.strip()
-        logger.info(f"✅ OCR Done. Extracted text length: {len(text_clean)}")
-
-        return {"text": text_clean}
+        cleaned = " ".join(text.split())
+        return {"text": cleaned}
 
     except Exception as e:
-        logger.exception("❌ Error during OCR:")
         raise HTTPException(status_code=500, detail=str(e))
