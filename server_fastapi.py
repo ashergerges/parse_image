@@ -1,15 +1,15 @@
-from fastapi import FastAPI, UploadFile, File, HTTPException
-from fastapi.middleware.cors import CORSMiddleware
-import easyocr
-from PIL import Image
 import io
-import numpy as np
+import gc
+from fastapi import FastAPI, File, UploadFile, HTTPException
+from fastapi.middleware.cors import CORSMiddleware
+from PIL import Image, ImageEnhance, ImageFilter
+import pytesseract
 import logging
 
-# ==========================
-# إعداد السيرفر
-# ==========================
-app = FastAPI(title="OCR ID Parser - EasyOCR Arabic")
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
+
+app = FastAPI(title="OCR ID Parser - Lightweight Arabic OCR")
 
 app.add_middleware(
     CORSMiddleware,
@@ -19,55 +19,78 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger("server_fastapi")
+def optimize_memory():
+    """تحسين استخدام الذاكرة"""
+    gc.collect()
 
-# تهيئة EasyOCR مرة واحدة عند بدء التشغيل
-reader = None
+def preprocess_image_lightweight(image):
+    """معالجة خفيفة للصورة لتوفير الذاكرة"""
+    
+    # تحويل مباشر لتدرج رمادي
+    if image.mode != 'L':
+        gray = image.convert('L')
+    else:
+        gray = image
+    
+    # تقليل حجم الصورة إذا كانت كبيرة
+    max_size = 800
+    if gray.size[0] > max_size:
+        ratio = max_size / gray.size[0]
+        new_size = (max_size, int(gray.size[1] * ratio))
+        gray = gray.resize(new_size, Image.LANCZOS)
+    
+    # تحسين بسيط للتباين
+    enhancer = ImageEnhance.Contrast(gray)
+    enhanced = enhancer.enhance(1.5)
+    
+    return enhanced
 
-@app.on_event("startup")
-async def startup_event():
-    global reader
-    try:
-        logger.info("🚀 جاري تحميل نموذج EasyOCR...")
-        reader = easyocr.Reader(['ar', 'en'], gpu=False)
-        logger.info("✅ تم تحميل النموذج بنجاح!")
-    except Exception as e:
-        logger.error(f"❌ خطأ في تحميل النموذج: {e}")
-        raise e
-
-# ==========================
-# نقطة الفحص
-# ==========================
 @app.get("/")
 async def home():
-    return {"message": "🚀 OCR API Running with EasyOCR!"}
+    return {"message": "🚀 Lightweight Arabic OCR API Running!"}
 
-# ==========================
-# رفع الصورة وتحليلها
-# ==========================
 @app.post("/parse-image")
 async def parse_image(file: UploadFile = File(...)):
-    if not file.content_type.startswith("image/"):
-        raise HTTPException(status_code=400, detail="الملف يجب أن يكون صورة")
-    
     try:
+        # تحرير الذاكرة قبل البدء
+        optimize_memory()
+        
+        if not file.content_type.startswith('image/'):
+            raise HTTPException(status_code=400, detail="الملف يجب أن يكون صورة")
+        
+        # قراءة الصورة
         image_bytes = await file.read()
-        image = Image.open(io.BytesIO(image_bytes)).convert("RGB")
-
-        # تحويل الصورة لـ numpy array
-        image_np = np.array(image)
-
+        image = Image.open(io.BytesIO(image_bytes))
+        
+        logger.info(f"📷 معالجة صورة: {image.size}")
+        
+        # معالجة خفيفة
+        processed_image = preprocess_image_lightweight(image)
+        
+        # إعدادات Tesseract موفرة للذاكرة
+        custom_config = '--oem 1 --psm 6 -c preserve_interword_spaces=1'
+        
         # استخراج النص
-        results = reader.readtext(image_np, paragraph=True)
-
-        if not results:
-            return {"text": ""}
-
-        # دمج النصوص المكتشفة
-        all_text = " ".join([res[1] for res in results])
-        return {"text": all_text.strip()}
-
+        text = pytesseract.image_to_string(
+            processed_image,
+            lang='ara',
+            config=custom_config
+        )
+        
+        # تنظيف النص
+        cleaned_text = " ".join(text.split())
+        
+        # تحرير الذاكرة بعد الانتهاء
+        del image, processed_image, image_bytes
+        optimize_memory()
+        
+        return {
+            "success": True,
+            "text": cleaned_text,
+            "backend": "Tesseract-Arabic"
+        }
+        
     except Exception as e:
-        logger.exception("❌ Error during OCR:")
-        raise HTTPException(status_code=500, detail=str(e))
+        logger.error(f"❌ خطأ: {e}")
+        optimize_memory()
+        raise HTTPException(status_code=500, detail=f"خطأ في معالجة الصورة: {str(e)}")
